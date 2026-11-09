@@ -2,11 +2,10 @@ import React, { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import {
-  FiCopy, FiTrash2, FiToggleLeft, FiToggleRight,
-  FiLoader, FiClock, FiZap, FiKey, FiMinus, FiPlus
+  FiCopy, FiTrash2, FiPower, FiLoader, FiClock, FiZap, FiMinus, FiSmartphone
 } from 'react-icons/fi'
 import { MdQrCode } from 'react-icons/md'
-import { toggleConfig, regenerateConfigKey, deleteConfig, editConfig, getSubscriptionLink } from '../api/client'
+import { toggleConfig, deleteConfig, editConfig, getSubscriptionLink } from '../api/client'
 import { useApp } from '../context/AppContext'
 import { TrafficField, DurationField } from './NumberFields'
 import QRModal from './QRModal'
@@ -19,6 +18,37 @@ function daysLeft(dateStr) {
   return Math.ceil((expiry - now) / (1000 * 60 * 60 * 24))
 }
 
+async function copyToClipboard(text) {
+  if (!text) return false
+  // Must stay inside the original click gesture, otherwise mobile WebViews
+  // (Telegram included) silently drop the clipboard write.
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to the legacy path
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
   const { t } = useTranslation('common')
   const { setConfigs, refreshConfigs, user, refreshUser } = useApp()
@@ -26,6 +56,7 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
   const [showQR, setShowQR] = useState(false)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [copyBusy, setCopyBusy] = useState(false)
   const [showRecharge, setShowRecharge] = useState(false)
   const [rechargeValue, setRechargeValue] = useState(0)
   const [rechargeError, setRechargeError] = useState(null)
@@ -37,6 +68,28 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
   const usagePercent = config.total_gb > 0 ? Math.min(100, (usedGb / config.total_gb) * 100) : 0
   const isEnabled = config.enable
   const expiryDays = daysLeft(config.expiry_date)
+  const isDepleted = config.total_gb > 0 && usedGb >= config.total_gb
+  const isExpired = config.status === 'expired' || (expiryDays !== null && expiryDays <= 0) || isDepleted
+  const limitIp = Number(config.limit_ip || 0)
+  // disabled → grey, expired/exhausted → red, healthy + enabled → green.
+  const visualState = !isEnabled ? 'disabled' : isExpired ? 'expired' : 'active'
+  const stateStyles = {
+    active: {
+      card: 'border-emerald-500/40 ring-1 ring-emerald-500/40',
+      overlay: 'bg-gradient-to-br from-emerald-500/[0.10] via-transparent to-emerald-500/[0.04]',
+      dot: 'bg-emerald-400',
+    },
+    expired: {
+      card: 'border-red-500/40 ring-1 ring-red-500/40',
+      overlay: 'bg-gradient-to-br from-red-500/[0.10] via-transparent to-red-500/[0.04]',
+      dot: 'bg-red-400',
+    },
+    disabled: {
+      card: 'border-gray-500/30 ring-1 ring-gray-500/30',
+      overlay: 'bg-gradient-to-br from-gray-500/[0.10] via-transparent to-gray-500/[0.04]',
+      dot: 'bg-gray-500',
+    },
+  }[visualState]
 
   const currentDurationDays = useMemo(() => {
     if (!config.expiry_date) return 0
@@ -71,19 +124,6 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
     }
   }
 
-  const handleRegenerateKey = async () => {
-    if (!window.confirm(t('confirmDialogs.regenerateKey'))) return
-    setBusy(true)
-    try {
-      await regenerateConfigKey(config.email)
-      await refreshAfterAction()
-    } catch (err) {
-      console.error(err)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const handleDelete = async () => {
     if (!window.confirm(t('confirmDialogs.deleteConfig'))) return
     setBusy(true)
@@ -101,30 +141,38 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
   }
 
   const handleCopyLink = async () => {
-    let link = ''
+    if (copyBusy) return
+    const cachedLink = config.subscription_link || ''
+
+    // Fast path: the link is already in the config payload, so copy it
+    // synchronously inside the tap gesture instead of waiting for a network
+    // round-trip. This is what made the old copy button feel laggy/unreliable.
+    if (cachedLink) {
+      const ok = await copyToClipboard(cachedLink)
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
+      return
+    }
+
+    setCopyBusy(true)
     try {
       const data = await getSubscriptionLink(config.email)
-      link = data?.subscription_link || ''
-    } catch (err) {
-      console.error(err)
-    }
-    if (!link) link = config.subscription_link || ''
-    if (link) {
+      const link = data?.subscription_link || ''
+      if (!link) return
       setConfigs(prev => prev.map(c =>
         c.uuid === config.uuid ? { ...c, subscription_link: link } : c
       ))
-      try {
-        await navigator.clipboard.writeText(link)
-      } catch {
-        const ta = document.createElement('textarea')
-        ta.value = link
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
+      const ok = await copyToClipboard(link)
+      if (ok) {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
       }
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setCopyBusy(false)
     }
   }
 
@@ -176,10 +224,12 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
 
   return (
     <>
-      <div className="bg-dark-card rounded-card p-4 animate-fade-in">
+      <div className={`relative overflow-hidden bg-dark-card rounded-card p-4 animate-fade-in border ${stateStyles.card}`}>
+        <div className={`pointer-events-none absolute inset-0 ${stateStyles.overlay}`} />
+        <div className="relative z-10">
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center gap-2 min-w-0">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${isEnabled ? 'bg-emerald-400' : 'bg-gray-500'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${stateStyles.dot}`} />
             <span className="text-white font-semibold text-[14px] truncate">{config.name || t('config.unnamed')}</span>
           </div>
           <span className={`px-2 py-0.5 rounded-pill text-[10px] font-bold uppercase tracking-wider border ${statusColor} shrink-0`}>
@@ -215,15 +265,28 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
               <span>{t('config.noExpiry')}</span>
             )}
           </div>
-          {config.inbound_names && config.inbound_names.length > 0 && (
-            <div className="flex gap-1">
-              {config.inbound_names.slice(0, 2).map((name, i) => (
-                <span key={i} className="text-[10px] text-gray-500 bg-white/5 px-1.5 py-0.5 rounded-pill">
-                  {name.length > 8 ? name.slice(0, 8) + '..' : name}
-                </span>
-              ))}
-            </div>
-          )}
+          <div className="flex items-center gap-1">
+            <span
+              className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-pill border ${
+                limitIp > 0
+                  ? 'text-sky-300 bg-sky-500/10 border-sky-500/20'
+                  : 'text-gray-400 bg-white/5 border-white/10'
+              }`}
+              title={t('config.deviceLimit')}
+            >
+              <FiSmartphone size={10} />
+              {limitIp > 0 ? limitIp : '∞'}
+            </span>
+            {config.inbound_names && config.inbound_names.length > 0 && (
+              <div className="flex gap-1">
+                {config.inbound_names.slice(0, 2).map((name, i) => (
+                  <span key={i} className="text-[10px] text-gray-500 bg-white/5 px-1.5 py-0.5 rounded-pill">
+                    {name.length > 8 ? name.slice(0, 8) + '..' : name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -236,18 +299,15 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
           </button>
           <button
             onClick={handleCopyLink}
-            className="flex items-center justify-center bg-white/10 hover:bg-white/15 text-gray-300 p-2.5 rounded-icon-btn transition-all active:scale-[0.98] flex-1"
+            disabled={copyBusy}
+            className={`flex items-center justify-center p-2.5 rounded-icon-btn transition-all active:scale-[0.98] flex-1 disabled:opacity-50 ${
+              copied
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : 'bg-white/10 hover:bg-white/15 text-gray-300'
+            }`}
             title={t('config.copyLink')}
           >
-            <FiCopy size={14} />
-          </button>
-          <button
-            onClick={handleRegenerateKey}
-            disabled={busy}
-            className="flex items-center justify-center bg-white/10 hover:bg-white/15 text-gray-300 p-2.5 rounded-icon-btn transition-all active:scale-[0.98] flex-1 disabled:opacity-30"
-            title={t('config.regenerateKey')}
-          >
-            <FiKey size={14} />
+            {copyBusy ? <FiLoader className="animate-spin" size={14} /> : <FiCopy size={14} />}
           </button>
           <button
             onClick={handleRecharge}
@@ -269,13 +329,14 @@ export default function ConfigCard({ config, onUpdate, onCharge, onRefresh }) {
             disabled={busy}
             className={`flex items-center justify-center p-2.5 rounded-icon-btn transition-all active:scale-[0.98] shrink-0 ${
               isEnabled
-                ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                ? 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
                 : 'bg-white/10 text-gray-500 hover:bg-white/15'
             }`}
             title={isEnabled ? t('config.disable') : t('config.enable')}
           >
-            {busy ? <FiLoader className="animate-spin" size={14} /> : isEnabled ? <FiToggleRight size={16} /> : <FiToggleLeft size={16} />}
+            {busy ? <FiLoader className="animate-spin" size={15} /> : <FiPower size={16} />}
           </button>
+        </div>
         </div>
       </div>
 

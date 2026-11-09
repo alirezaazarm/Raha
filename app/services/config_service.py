@@ -1,10 +1,13 @@
 import asyncio
+import base64
 import hashlib
 import io
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -45,6 +48,48 @@ def _parse_name_from_email(email: str) -> str:
     return parts[1] if len(parts) > 1 else email
 
 
+def _decode_vmess_name(link: str) -> str:
+    try:
+        payload = link.split("://", 1)[1].split("#", 1)[0]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.b64decode(payload).decode("utf-8", "ignore"))
+        return str(data.get("ps") or "").strip()
+    except Exception:
+        return ""
+
+
+def _proxy_endpoint_label(link: str, index: int) -> str:
+    scheme = link.split("://", 1)[0].lower() if "://" in link else ""
+    try:
+        parsed = urlsplit(link)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except Exception:
+        host, port = "", None
+    label = scheme.upper() if scheme else f"Proxy {index + 1}"
+    if host:
+        label = f"{label} · {host}" + (f":{port}" if port else "")
+    return label
+
+
+def proxy_display_name(link: str, index: int, ignore_names: Optional[set] = None) -> str:
+    """Best-effort human readable name for a proxy URI."""
+    scheme = link.split("://", 1)[0].lower() if "://" in link else ""
+    name = ""
+    if scheme == "vmess":
+        name = _decode_vmess_name(link)
+    if not name:
+        try:
+            name = unquote(urlsplit(link).fragment or "").strip()
+        except Exception:
+            name = ""
+    if name and ignore_names and name in ignore_names:
+        # XUI puts the client email in the fragment, which is identical for
+        # every proxy. Fall back to protocol + endpoint so each QR is distinct.
+        name = ""
+    return name or _proxy_endpoint_label(link, index)
+
+
 def _normalize_raw_xui_client(raw: dict, server: dict) -> dict:
     traffic = raw.get("traffic") or {}
     inbound_ids = raw.get("inboundIds") or []
@@ -60,6 +105,7 @@ def _normalize_raw_xui_client(raw: dict, server: dict) -> dict:
         "total_gb": total_gb,
         "expiry_time_ms": min(int(raw.get("expiryTime", 0) or 0), _MAX_SANE_TIMESTAMP_MS),
         "enable": bool(raw.get("enable", traffic.get("enable", True))),
+        "limit_ip": int(raw.get("limitIp", 0) or 0),
         "subId": raw.get("subId") or "",
         "last_online": int(raw.get("last_online", 0) or 0),
     }
@@ -100,6 +146,7 @@ def _client_to_response(
         last_online=last_online,
         is_online=False,
         domain_name=client.get("domain_name", ""),
+        limit_ip=int(client.get("limit_ip", 0) or 0),
         subscription_link=client.get("subscription_link", ""),
         inbound_ids=client.get("inbound_ids", []),
         inbound_names=client.get("inbound_names", []),
@@ -237,6 +284,36 @@ class ConfigService:
             logger.warning("Failed to send Telegram document to %s: %s", chat_id, exc)
             return False
 
+    async def _send_telegram_message(
+        self, bot_token: str, chat_id: int, text: str
+    ) -> bool:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        # Telegram caps a message at 4096 characters; split long link lists.
+        chunks: list[str] = []
+        current = ""
+        for line in text.splitlines():
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > 3800 and current:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for chunk in chunks:
+                    resp = await client.post(
+                        url,
+                        data={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": "true"},
+                    )
+                    if resp.status_code != 200 or not resp.json().get("ok", False):
+                        return False
+            return True
+        except Exception as exc:
+            logger.warning("Failed to send Telegram message to %s: %s", chat_id, exc)
+            return False
+
     # ------------------------------------------------------------------ #
     # Read
     # ------------------------------------------------------------------ #
@@ -319,6 +396,7 @@ class ConfigService:
         total_gb: float,
         duration_days: int,
         inbound_ids: Optional[list[int]] = None,
+        limit_ip: int = 0,
     ) -> VpnConfigResponse:
         server = self._settings.get_enabled_servers()[0]
         server_name = server.get("name", server.get("server_name", ""))
@@ -339,7 +417,7 @@ class ConfigService:
             "totalGB": int(total_gb * 1024**3),
             "expiryTime": expiry_time,
             "flow": "",
-            "limitIp": 0,
+            "limitIp": max(0, int(limit_ip)),
             "tgId": telegram_id,
             "subId": sub_id,
         }
@@ -382,6 +460,7 @@ class ConfigService:
                 "last_online": 0,
                 "subId": sub_id,
                 "subscription_link": sub_link,
+                "limit_ip": max(0, int(limit_ip)),
                 "inbound_ids": resolved_inbound_ids,
                 "inbound_names": resolved_inbound_names,
             },
@@ -437,7 +516,7 @@ class ConfigService:
             "totalGB": int(client.get("total_gb", 0) * 1024**3),
             "expiryTime": client.get("expiry_time_ms", 0),
             "flow": "",
-            "limitIp": 0,
+            "limitIp": int(client.get("limit_ip", 0) or 0),
             "tgId": tid or 0,
             "subId": client.get("subId", ""),
         }
@@ -508,7 +587,7 @@ class ConfigService:
             "totalGB": int((total_gb or client.get("total_gb", 0)) * 1024**3),
             "expiryTime": expiry_time,
             "flow": "",
-            "limitIp": 0,
+            "limitIp": int(client.get("limit_ip", 0) or 0),
             "tgId": tid or 0,
             "subId": client.get("subId", ""),
         }
@@ -559,6 +638,66 @@ class ConfigService:
         xui = build_xui_client(server)
         return await xui.build_subscription_link(sub_id)
 
+    async def get_proxies(
+        self, email: str, telegram_id: int, role: str
+    ) -> list[dict]:
+        tid = _parse_telegram_id_from_email(email)
+        if tid != telegram_id and role != "admin":
+            raise PermissionError("Access denied")
+        client, server = await self.find_client_by_email(email)
+        if not client or not server:
+            raise ValueError("Config not found")
+        xui = build_xui_client(server)
+        sub_id = client.get("subId", "")
+        links = await xui.get_sub_links(sub_id) if sub_id else []
+        if not links:
+            links = await xui.get_client_links(email) or []
+        ignore_names = {email, _parse_name_from_email(email)}
+        names = [proxy_display_name(link, idx, ignore_names) for idx, link in enumerate(links)]
+        counts: dict[str, int] = {}
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
+        result = []
+        used: dict[str, int] = {}
+        for idx, link in enumerate(links):
+            name = names[idx] if counts[names[idx]] == 1 else _proxy_endpoint_label(link, idx)
+            used[name] = used.get(name, 0) + 1
+            if used[name] > 1:
+                name = f"{name} ({used[name]})"
+            result.append({"name": name, "link": link})
+        return result
+
+    async def send_links_to_bot(
+        self,
+        email: str,
+        telegram_id: int,
+        role: str,
+        bot_token: str,
+    ) -> dict:
+        tid = _parse_telegram_id_from_email(email)
+        if tid != telegram_id and role != "admin":
+            raise PermissionError("Access denied")
+        client, server = await self.find_client_by_email(email)
+        if not client or not server:
+            raise ValueError("Config not found")
+        xui = build_xui_client(server)
+        sub_id = client.get("subId", "")
+        links = await xui.get_sub_links(sub_id) if sub_id else []
+        if not links:
+            links = await xui.get_client_links(email) or []
+        if not links:
+            raise RuntimeError("No config links available for this config")
+        name_only = _parse_name_from_email(email)
+        text = f"{name_only}\n\n" + "\n".join(links)
+        success = await self._send_telegram_message(bot_token, telegram_id, text)
+        if not success:
+            raise RuntimeError("Failed to send config list via Telegram Bot")
+        return {
+            "status": "success",
+            "message": "Config list sent to your Telegram!",
+            "count": len(links),
+        }
+
     async def regenerate_key(
         self, email: str, telegram_id: int, role: str
     ) -> VpnConfigResponse:
@@ -578,7 +717,7 @@ class ConfigService:
             "totalGB": int(client.get("total_gb", 0) * 1024**3),
             "expiryTime": client.get("expiry_time_ms", 0),
             "flow": "",
-            "limitIp": 0,
+            "limitIp": int(client.get("limit_ip", 0) or 0),
             "tgId": tid or 0,
             "subId": client.get("subId", ""),
         }

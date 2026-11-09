@@ -28,7 +28,17 @@
     "trafficPositive": "ترافیک باید بیشتر از 0 باشد",
     "insufficientTraffic": "موجودی ترافیک ناکافی است. شما {{trafficBalance}} گیگابایت در دسترس دارید.",
     "durationNonNegative": "مدت باید 0 یا بیشتر باشد",
-    "failedCreate": "ایجاد کانفیگ ناموفق بود"
+    "failedCreate": "ایجاد کانفیگ ناموفق بود",
+    "subtitle": "ترافیک، مدت و محدودیت دستگاه را تنظیم کنید",
+    "nameHint": "فقط حروف و اعداد — بدون فاصله، خط تیره یا اسلش",
+    "nameInvalid": "فاصله، خط تیره و اسلش به‌صورت خودکار حذف می‌شوند",
+    "available": "موجودی: {{trafficBalance}} گیگابایت",
+    "unlimited": "بدون محدودیت",
+    "devicesShort": "دستگاه",
+    "daysShort": "روز",
+    "deviceLimit": "محدودیت اتصال همزمان دستگاه",
+    "deviceLimitHint": "از ۱ تا ۵ دستگاه، یا ∞ برای بدون محدودیت.",
+    "deviceLimitInvalid": "محدودیت دستگاه باید بین ۰ تا ۵ باشد"
   },
   "usageHistogram": {
     "title": "نمای کلی ترافیک",

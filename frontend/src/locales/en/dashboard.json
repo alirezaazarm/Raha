@@ -28,7 +28,17 @@
     "trafficPositive": "Traffic must be greater than 0",
     "insufficientTraffic": "Insufficient traffic balance. You have {{trafficBalance}} GB available.",
     "durationNonNegative": "Duration must be 0 or more",
-    "failedCreate": "Failed to create config"
+    "failedCreate": "Failed to create config",
+    "subtitle": "Set traffic, duration and device limit",
+    "nameHint": "Letters and numbers only — no spaces, hyphens or slashes",
+    "nameInvalid": "Spaces, hyphens and slashes are removed automatically",
+    "available": "Available: {{trafficBalance}} GB",
+    "unlimited": "Unlimited",
+    "devicesShort": "devices",
+    "daysShort": "days",
+    "deviceLimit": "Concurrent device limit",
+    "deviceLimitHint": "1 to 5 devices, or ∞ for no limit.",
+    "deviceLimitInvalid": "Device limit must be between 0 and 5"
   },
   "usageHistogram": {
     "title": "Traffic Overview",

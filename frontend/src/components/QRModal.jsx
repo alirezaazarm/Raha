@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { QRCodeSVG } from 'qrcode.react'
-import { sendConfigToBot } from '../api/client'
+import { FiChevronLeft, FiChevronRight, FiLoader, FiList } from 'react-icons/fi'
+import { getConfigProxies, sendConfigToBot, sendConfigLinksToBot } from '../api/client'
 
 const CloseIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -19,33 +20,106 @@ export default function QRModal({ email, configName, subscriptionLink, onClose }
   const { t } = useTranslation('common')
   const [zipPassword, setZipPassword] = useState('')
   const [showZipInput, setShowZipInput] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [message, setMessage] = useState(null)
-  const [error, setError] = useState(null)
+  const [sendingZip, setSendingZip] = useState(false)
+  const [sendingList, setSendingList] = useState(false)
+  const [feedback, setFeedback] = useState(null)
+  const [proxies, setProxies] = useState([])
+  const [loadingProxies, setLoadingProxies] = useState(true)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const touchStartX = useRef(null)
+  const tabsRef = useRef(null)
 
-  const handleSendToBot = async () => {
+  useEffect(() => {
+    let cancelled = false
+    setLoadingProxies(true)
+    getConfigProxies(email)
+      .then((data) => {
+        if (!cancelled) setProxies(Array.isArray(data) ? data : [])
+      })
+      .catch(() => {
+        if (!cancelled) setProxies([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProxies(false)
+      })
+    return () => { cancelled = true }
+  }, [email])
+
+  const slides = useMemo(() => {
+    const list = []
+    if (subscriptionLink) {
+      list.push({ name: t('qrModal.subscription'), link: subscriptionLink, isSubscription: true })
+    }
+    proxies.forEach((p, idx) => {
+      list.push({
+        name: p.name || t('qrModal.proxy', { index: idx + 1 }),
+        link: p.link,
+        isSubscription: false,
+      })
+    })
+    return list
+  }, [proxies, subscriptionLink, t])
+
+  useEffect(() => {
+    if (activeIndex > slides.length - 1) setActiveIndex(0)
+  }, [slides.length, activeIndex])
+
+  useEffect(() => {
+    const el = tabsRef.current?.querySelector(`[data-tab="${activeIndex}"]`)
+    el?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+  }, [activeIndex])
+
+  const current = slides[activeIndex]
+  const canNavigate = slides.length > 1
+  const go = (delta) => {
+    if (!canNavigate) return
+    setActiveIndex((idx) => (idx + delta + slides.length) % slides.length)
+  }
+
+  const onTouchStart = (e) => { touchStartX.current = e.touches[0]?.clientX ?? null }
+  const onTouchEnd = (e) => {
+    if (touchStartX.current == null) return
+    const delta = (e.changedTouches[0]?.clientX ?? touchStartX.current) - touchStartX.current
+    touchStartX.current = null
+    if (Math.abs(delta) < 40) return
+    go(delta < 0 ? 1 : -1)
+  }
+
+  const handleSendZip = async () => {
     if (!zipPassword.trim()) return
-    setSending(true)
-    setError(null)
-    setMessage(null)
+    setSendingZip(true)
+    setFeedback(null)
     try {
       const res = await sendConfigToBot(email, zipPassword.trim())
-      setMessage(res.message || t('qrModal.sent'))
+      setFeedback({ type: 'success', text: res.message || t('qrModal.sent') })
       setShowZipInput(false)
       setZipPassword('')
     } catch (err) {
-      setError(err?.response?.data?.detail || t('qrModal.failed'))
+      setFeedback({ type: 'error', text: err?.response?.data?.detail || t('qrModal.failed') })
     } finally {
-      setSending(false)
+      setSendingZip(false)
+    }
+  }
+
+  const handleSendList = async () => {
+    setSendingList(true)
+    setFeedback(null)
+    try {
+      const res = await sendConfigLinksToBot(email)
+      setFeedback({ type: 'success', text: res.message || t('qrModal.listSent') })
+    } catch (err) {
+      setFeedback({ type: 'error', text: err?.response?.data?.detail || t('qrModal.listFailed') })
+    } finally {
+      setSendingList(false)
     }
   }
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 backdrop-blur-sm px-4 pb-24"
+      className="fixed inset-0 z-[150] flex items-end justify-center bg-black/70 backdrop-blur-sm px-4 pb-24"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="bg-slate-800 rounded-2xl ring-1 ring-slate-700 w-full max-w-sm p-5 space-y-4 overflow-y-auto max-h-[80vh]">
+      <div className="bg-slate-800 rounded-2xl ring-1 ring-slate-700 w-full max-w-sm p-5 space-y-4 overflow-y-auto max-h-[85vh]">
         {/* Header */}
         <div className="flex items-center justify-between">
           <h3 className="text-white font-semibold text-base truncate pe-2">{configName || t('qrModal.vpnConfig')}</h3>
@@ -57,19 +131,103 @@ export default function QRModal({ email, configName, subscriptionLink, onClose }
           </button>
         </div>
 
-        {/* QR area */}
-        <div className="flex items-center justify-center bg-white rounded-xl p-4 min-h-[200px]">
-          {subscriptionLink ? (
-            <QRCodeSVG value={subscriptionLink} size={180} level="M" includeMargin={false} />
-          ) : (
-            <div className="text-slate-500 text-sm text-center">{t('qrModal.noLink')}</div>
+        {/* Carousel tabs */}
+        <div
+          ref={tabsRef}
+          className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {slides.map((slide, idx) => (
+            <button
+              key={`${slide.link}-${idx}`}
+              data-tab={idx}
+              type="button"
+              onClick={() => setActiveIndex(idx)}
+              className={`shrink-0 max-w-[150px] truncate text-[11px] font-semibold px-2.5 py-1.5 rounded-pill border transition-colors ${
+                idx === activeIndex
+                  ? 'bg-emerald-500 text-white border-emerald-500'
+                  : 'bg-slate-700/60 text-slate-300 border-slate-600 hover:bg-slate-700'
+              }`}
+              title={slide.name}
+            >
+              {slide.name}
+            </button>
+          ))}
+          {loadingProxies && slides.length <= 1 && (
+            <span className="shrink-0 text-[11px] text-slate-400 px-2 py-1.5 flex items-center gap-1">
+              <FiLoader className="animate-spin" size={12} />
+              {t('qrModal.loadingProxies')}
+            </span>
           )}
         </div>
 
-        {/* URI preview */}
-        {subscriptionLink && (
+        {/* QR area */}
+        <div className="relative">
+          <div
+            className="flex items-center justify-center bg-white rounded-xl p-4 min-h-[200px] touch-pan-y"
+            onTouchStart={onTouchStart}
+            onTouchEnd={onTouchEnd}
+          >
+            {current?.link ? (
+              <QRCodeSVG value={current.link} size={180} level="M" includeMargin={false} />
+            ) : (
+              <div className="text-slate-500 text-sm text-center px-4">
+                {loadingProxies ? t('qrModal.loadingProxies') : t('qrModal.noLink')}
+              </div>
+            )}
+          </div>
+
+          {canNavigate && (
+            <>
+              <button
+                type="button"
+                onClick={() => go(-1)}
+                className="absolute start-1 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-slate-900/70 text-white hover:bg-slate-900"
+                aria-label={t('qrModal.previous')}
+              >
+                <FiChevronLeft size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => go(1)}
+                className="absolute end-1 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-slate-900/70 text-white hover:bg-slate-900"
+                aria-label={t('qrModal.next')}
+              >
+                <FiChevronRight size={16} />
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Current slide label + dots */}
+        {slides.length > 0 && (
+          <div className="text-center -mt-1">
+            <p className="text-white text-[13px] font-semibold truncate px-3">{current?.name}</p>
+            <div className="flex items-center justify-center gap-1 mt-1.5">
+              {slides.length <= 12 ? (
+                slides.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setActiveIndex(idx)}
+                    className={`h-1.5 rounded-full transition-all ${
+                      idx === activeIndex ? 'w-4 bg-emerald-400' : 'w-1.5 bg-slate-600'
+                    }`}
+                    aria-label={t('qrModal.goToSlide', { index: idx + 1 })}
+                  />
+                ))
+              ) : (
+                <span className="text-[11px] text-slate-400">
+                  {t('qrModal.slideCount', { current: activeIndex + 1, total: slides.length })}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Subscription link preview */}
+        {current?.isSubscription && current.link && (
           <div className="bg-slate-900 rounded-lg px-3 py-2 border border-slate-700">
-            <p className="text-slate-400 text-xs break-all line-clamp-3 font-mono">{subscriptionLink}</p>
+            <p className="text-slate-400 text-xs break-all line-clamp-3 font-mono">{current.link}</p>
           </div>
         )}
 
@@ -91,22 +249,22 @@ export default function QRModal({ email, configName, subscriptionLink, onClose }
                 onChange={(e) => setZipPassword(e.target.value)}
                 placeholder={t('qrModal.setPassword')}
                 className="flex-1 bg-slate-700 border border-slate-600 text-white text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-emerald-500"
-                onKeyDown={(e) => e.key === 'Enter' && handleSendToBot()}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendZip()}
                 autoFocus
               />
               <button
-                onClick={handleSendToBot}
-                disabled={sending || !zipPassword.trim()}
+                onClick={handleSendZip}
+                disabled={sendingZip || !zipPassword.trim()}
                 className="flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white text-sm font-medium px-4 rounded-xl transition-colors"
               >
-                {sending ? (
+                {sendingZip ? (
                   <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
                   t('qrModal.send')
                 )}
               </button>
               <button
-                onClick={() => { setShowZipInput(false); setZipPassword(''); setError(null) }}
+                onClick={() => { setShowZipInput(false); setZipPassword(''); setFeedback(null) }}
                 className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-700 transition-colors"
               >
                 ✕
@@ -115,11 +273,24 @@ export default function QRModal({ email, configName, subscriptionLink, onClose }
           </div>
         )}
 
-        {error && (
-          <p className="text-rose-400 text-center text-xs bg-rose-400/10 py-2 rounded-lg">{error}</p>
-        )}
-        {message && (
-          <p className="text-emerald-400 text-center text-xs bg-emerald-400/10 py-2 rounded-lg">{message}</p>
+        {/* Send plain list of all config links */}
+        <button
+          onClick={handleSendList}
+          disabled={sendingList || loadingProxies}
+          className="w-full flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-medium text-sm py-3 rounded-xl transition-colors"
+        >
+          {sendingList ? <FiLoader className="animate-spin" size={16} /> : <FiList size={16} />}
+          {t('qrModal.sendListToTelegram')}
+        </button>
+
+        {feedback && (
+          <p className={`text-center text-xs py-2 rounded-lg ${
+            feedback.type === 'success'
+              ? 'text-emerald-400 bg-emerald-400/10'
+              : 'text-rose-400 bg-rose-400/10'
+          }`}>
+            {feedback.text}
+          </p>
         )}
       </div>
     </div>

@@ -84,6 +84,10 @@ async def create_config(
 ) -> VpnConfigResponse:
     if "-" in payload.name:
         raise HTTPException(status_code=400, detail="Config name must not contain hyphens")
+    if any(ch.isspace() for ch in payload.name):
+        raise HTTPException(status_code=400, detail="Config name must not contain spaces")
+    if "/" in payload.name or "\\" in payload.name:
+        raise HTTPException(status_code=400, detail="Config name must not contain slashes")
     if current_user.traffic_balance_gb < payload.total_gb:
         raise HTTPException(status_code=402, detail="Insufficient traffic balance")
     try:
@@ -93,6 +97,7 @@ async def create_config(
             total_gb=payload.total_gb,
             duration_days=payload.duration_days,
             inbound_ids=payload.inbound_ids,
+            limit_ip=payload.limit_ip,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -167,6 +172,50 @@ async def get_subscription_link(
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"subscription_link": link}
+
+
+@router.get("/{email}/proxies")
+async def get_config_proxies(
+    email: str,
+    current_user: UserModel = Depends(get_current_user),
+    service: ConfigService = Depends(_get_config_service),
+) -> list[dict]:
+    try:
+        return await service.get_proxies(
+            email=email,
+            telegram_id=current_user.telegram_id,
+            role=current_user.role,
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Config not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.post("/{email}/send-links-to-bot")
+async def send_config_links_to_bot(
+    email: str,
+    current_user: UserModel = Depends(get_current_user),
+    service: ConfigService = Depends(_get_config_service),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    if not settings.BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Bot token not configured")
+    try:
+        return await service.send_links_to_bot(
+            email=email,
+            telegram_id=current_user.telegram_id,
+            role=current_user.role,
+            bot_token=settings.BOT_TOKEN,
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Config not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.post("/{email}/regenerate-key", response_model=VpnConfigResponse)

@@ -39,7 +39,9 @@
     "traffic": "ترافیک",
     "duration": "مدت",
     "failedUpdate": "به‌روزرسانی کانفیگ ناموفق بود",
-    "copied": "در کلیپ‌بورد کپی شد"
+    "copied": "در کلیپ‌بورد کپی شد",
+    "deviceLimit": "محدودیت اتصال همزمان دستگاه",
+    "unlimitedDevices": "بدون محدودیت دستگاه"
   },
   "numberFields": {
     "confirm": "تأیید",
@@ -52,7 +54,17 @@
     "setPassword": "تنظیم رمز ZIP",
     "send": "ارسال",
     "sent": "ZIP به تلگرام شما ارسال شد!",
-    "failed": "ارسال ZIP ناموفق بود"
+    "failed": "ارسال ZIP ناموفق بود",
+    "subscription": "سابسپریکشن",
+    "proxy": "پروکسی {{index}}",
+    "loadingProxies": "در حال بارگذاری پروکسی‌ها…",
+    "previous": "قبلی",
+    "next": "بعدی",
+    "goToSlide": "رفتن به اسلاید {{index}}",
+    "slideCount": "{{current}} / {{total}}",
+    "sendListToTelegram": "ارسال لیست کانفیگ‌ها به تلگرام",
+    "listSent": "لیست کانفیگ‌ها به تلگرام شما ارسال شد!",
+    "listFailed": "ارسال لیست کانفیگ‌ها ناموفق بود"
   },
   "confirmDialogs": {
     "deleteConfig": "این کانفیگ حذف شود؟ ترافیک استفاده‌نشده بازگردانده می‌شود.",

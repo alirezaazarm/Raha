@@ -354,6 +354,7 @@ class AsyncXUIClient:
                 "total_gb": total_gb,
                 "expiry_time_ms": min(int(c.get("expiryTime", 0) or 0), _MAX_SANE_TIMESTAMP_MS),
                 "enable": bool(c.get("enable", traffic.get("enable", True))),
+                "limit_ip": int(c.get("limitIp", 0) or 0),
                 "last_online": int(last_online_map.get(c.get("email"), 0) or 0),
                 "subId": sub_id,
                 "subscription_link": sub_link,

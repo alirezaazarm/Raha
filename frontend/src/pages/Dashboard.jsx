@@ -5,10 +5,10 @@ import { useApp } from '../context/AppContext'
 import ConfigCard from '../components/ConfigCard'
 import UsageHistogram from '../components/UsageHistogram'
 import { createConfig } from '../api/client'
-import { TrafficField, DurationField } from '../components/NumberFields'
+import { toAsciiDigits } from '../components/NumberFields'
 import {
-  FiPlus, FiX, FiRefreshCw, FiAlertCircle,
-  FiActivity, FiServer, FiClock, FiPieChart
+  FiPlus, FiX, FiAlertCircle, FiActivity, FiServer, FiClock, FiPieChart,
+  FiSmartphone, FiCheck, FiLoader,
 } from 'react-icons/fi'
 
 function bytesToGB(bytes) {
@@ -21,6 +21,24 @@ function daysLeft(dateStr) {
   const expiry = new Date(dateStr)
   const now = new Date()
   return Math.ceil((expiry - now) / (1000 * 60 * 60 * 24))
+}
+
+// Accept Persian/Arabic/any Unicode digits and normalise to ASCII so the
+// user can keep their own keyboard layout while typing numbers.
+function sanitizeDecimalText(raw) {
+  const ascii = toAsciiDigits(String(raw ?? '')).replace(/[^\d.]/g, '')
+  const parts = ascii.split('.')
+  const intPart = parts[0].replace(/^0+(?=\d)/, '')
+  if (parts.length > 1) {
+    return (intPart || '0') + '.' + parts.slice(1).join('').slice(0, 2)
+  }
+  return intPart
+}
+
+function sanitizeIntText(raw) {
+  return toAsciiDigits(String(raw ?? ''))
+    .replace(/\D/g, '')
+    .replace(/^0+(?=\d)/, '')
 }
 
 function estimateDaysRemaining(configs) {
@@ -84,7 +102,8 @@ export default function Dashboard() {
   const { user, configs, loading, configsError, setConfigsError, refreshConfigs, refreshUser } = useApp()
   const navigate = useNavigate()
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [createForm, setCreateForm] = useState({ name: '', total_gb: 1, duration_days: 30 })
+  const [createForm, setCreateForm] = useState({ name: '', total_gb: '1', duration_days: '30', limit_ip: '' })
+  const [nameWarning, setNameWarning] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState(null)
 
@@ -98,25 +117,39 @@ export default function Dashboard() {
   const handleCharge = () => navigate('/profile')
 
   const openCreateModal = () => {
+    setCreateError(null)
+    setNameWarning(false)
     setShowCreateModal(true)
+  }
+
+  const closeCreateModal = () => {
+    setShowCreateModal(false)
+    setCreateError(null)
+    setNameWarning(false)
   }
 
   const handleCreateConfig = async (e) => {
     e.preventDefault()
     setCreateError(null)
-    if (!createForm.name.trim()) { setCreateError(t('createModal.nameRequired')); return }
-    if (createForm.name.includes('-')) { setCreateError(t('createModal.noHyphens')); return }
-    if (!(createForm.total_gb > 0)) { setCreateError(t('createModal.trafficPositive')); return }
-    if (createForm.total_gb > trafficBalanceGB) {
+    const name = createForm.name.trim()
+    const totalGb = parseFloat(createForm.total_gb) || 0
+    const durationDays = parseInt(createForm.duration_days || '0', 10) || 0
+    const limitIp = createForm.limit_ip === '' ? 0 : parseInt(createForm.limit_ip, 10) || 0
+
+    if (!name) { setCreateError(t('createModal.nameRequired')); return }
+    if (/[-/\\\s]/.test(name)) { setCreateError(t('createModal.nameInvalid')); return }
+    if (!(totalGb > 0)) { setCreateError(t('createModal.trafficPositive')); return }
+    if (totalGb > trafficBalanceGB) {
       setCreateError(t('createModal.insufficientTraffic', { trafficBalance: trafficBalanceGB.toFixed(2) }))
       return
     }
-    if (createForm.duration_days < 0) { setCreateError(t('createModal.durationNonNegative')); return }
+    if (durationDays < 0) { setCreateError(t('createModal.durationNonNegative')); return }
+    if (limitIp < 0 || limitIp > 5) { setCreateError(t('createModal.deviceLimitInvalid')); return }
     setCreating(true)
     try {
-      await createConfig({ ...createForm, name: createForm.name.trim() })
+      await createConfig({ name, total_gb: totalGb, duration_days: durationDays, limit_ip: limitIp })
       setShowCreateModal(false)
-      setCreateForm({ name: '', total_gb: 1, duration_days: 30 })
+      setCreateForm({ name: '', total_gb: '1', duration_days: '30', limit_ip: '' })
       await Promise.all([refreshConfigs(), refreshUser()])
     } catch (err) {
       const detail = err.response?.data?.detail || err.message || t('createModal.failedCreate')
@@ -129,6 +162,11 @@ export default function Dashboard() {
   const handleConfigUpdate = async () => {
     await Promise.all([refreshConfigs(), refreshUser()])
   }
+
+  const createTotalGb = parseFloat(createForm.total_gb) || 0
+  const createDurationDays = createForm.duration_days === '' ? 0 : (parseInt(createForm.duration_days, 10) || 0)
+  const createLimitIp = createForm.limit_ip === '' ? 0 : (parseInt(createForm.limit_ip, 10) || 0)
+  const deviceLimitOptions = [0, 1, 2, 3, 4, 5]
 
   const sortedConfigs = [...configs].sort((a, b) => {
     if (a.status === 'active' && b.status !== 'active') return -1
@@ -272,59 +310,172 @@ export default function Dashboard() {
 
       {/* Create Config Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={e => { if (e.target === e.currentTarget) setShowCreateModal(false) }}>
-          <div className="w-full max-w-sm bg-dark-card border border-white/10 rounded-2xl animate-scale-in overflow-hidden shadow-2xl">
-            <div className="flex items-center justify-between px-4 pt-4 pb-2">
-              <h3 className="text-[15px] font-bold text-white">{t('createModal.title')}</h3>
-              <button onClick={() => setShowCreateModal(false)} className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 transition-colors">
+        <div className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm sm:p-4" onClick={e => { if (e.target === e.currentTarget) closeCreateModal() }}>
+          <div className="w-full max-w-sm bg-dark-card border border-white/10 rounded-t-3xl sm:rounded-2xl animate-scale-in shadow-2xl max-h-[92vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/5 shrink-0">
+              <div>
+                <h3 className="text-white text-[15px] font-bold leading-tight">{t('createModal.title')}</h3>
+                <p className="text-gray-500 text-[10px] mt-0.5">{t('createModal.subtitle')}</p>
+              </div>
+              <button onClick={closeCreateModal} className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 transition-colors">
                 <FiX size={16} />
               </button>
             </div>
-            <div className="px-4 pb-4">
+
+            <div className="px-4 py-3 overflow-y-auto">
               {createError && (
-                <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2 text-rose-400 text-[12px] mb-3">
-                  {createError}
+                <div className="bg-rose-500/10 border border-rose-500/20 rounded-lg px-2.5 py-2 text-rose-400 text-[11px] mb-3 flex items-start gap-1.5">
+                  <FiAlertCircle size={13} className="mt-0.5 shrink-0" />
+                  <span>{createError}</span>
                 </div>
               )}
               <form onSubmit={handleCreateConfig} className="space-y-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-gray-500 mb-1">{t('createModal.name')}</label>
+                {/* Name */}
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-400">{t('createModal.name')}</label>
                   <input
                     type="text"
                     value={createForm.name}
-                    onChange={e => setCreateForm({...createForm, name: e.target.value})}
+                    onChange={e => {
+                      const raw = e.target.value
+                      setNameWarning(/[-/\\\s]/.test(raw))
+                      setCreateForm(f => ({ ...f, name: raw.replace(/[-/\\\s]/g, '').slice(0, 32) }))
+                    }}
                     placeholder={t('createModal.namePlaceholder')}
                     maxLength={32}
                     required
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-[13px] focus:outline-none focus:border-emerald-500 transition-colors"
+                    autoComplete="off"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-[14px] focus:outline-none focus:border-emerald-500 transition-colors"
                   />
+                  <p className={`text-[10px] ${nameWarning ? 'text-amber-400' : 'text-gray-600'}`}>
+                    {nameWarning ? t('createModal.nameInvalid') : t('createModal.nameHint')}
+                  </p>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-gray-500 mb-1">{t('createModal.traffic')}</label>
-                  <TrafficField
-                    value={createForm.total_gb}
-                    onChange={(v) => setCreateForm({ ...createForm, total_gb: v })}
-                    min={0}
-                    max={trafficBalanceGB}
-                    unit="GB"
-                  />
+
+                {/* Traffic + Duration */}
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1">
+                      <label className="text-[11px] font-semibold text-gray-400">{t('createModal.traffic')}</label>
+                      <span className="text-[9px] text-gray-600 truncate">{trafficBalanceGB.toFixed(1)} GB</span>
+                    </div>
+                    <div className="flex items-center bg-white/5 border border-white/10 rounded-lg px-2.5 focus-within:border-emerald-500 transition-colors">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        dir="ltr"
+                        value={createForm.total_gb}
+                        onChange={e => setCreateForm(f => ({ ...f, total_gb: sanitizeDecimalText(e.target.value) }))}
+                        placeholder="0"
+                        className="w-full min-w-0 bg-transparent py-2 text-[17px] font-bold text-white outline-none tabular-nums"
+                      />
+                      <span className="text-[10px] font-semibold text-gray-500 shrink-0">GB</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {[1, 5, 10, 25, 50].filter(p => p <= trafficBalanceGB).slice(0, 3).map(p => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setCreateForm(f => ({ ...f, total_gb: String(p) }))}
+                          className={`px-2 py-0.5 rounded-pill text-[10px] font-semibold border transition-all active:scale-[0.97] ${
+                            createTotalGb === p
+                              ? 'bg-emerald-500 text-white border-emerald-500'
+                              : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 min-w-0">
+                    <label className="block text-[11px] font-semibold text-gray-400">{t('createModal.duration')}</label>
+                    <div className="flex items-center bg-white/5 border border-white/10 rounded-lg px-2.5 focus-within:border-emerald-500 transition-colors">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        dir="ltr"
+                        value={createForm.duration_days}
+                        onChange={e => setCreateForm(f => ({ ...f, duration_days: sanitizeIntText(e.target.value) }))}
+                        placeholder="∞"
+                        className="w-full min-w-0 bg-transparent py-2 text-[17px] font-bold text-white outline-none tabular-nums"
+                      />
+                      <span className="text-[10px] font-semibold text-gray-500 shrink-0">
+                        {createForm.duration_days === '' ? '∞' : t('createModal.daysShort')}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {['1', '30', '60', '90'].map(d => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setCreateForm(f => ({ ...f, duration_days: d }))}
+                          className={`px-2 py-0.5 rounded-pill text-[10px] font-semibold border transition-all active:scale-[0.97] ${
+                            createForm.duration_days === d
+                              ? 'bg-emerald-500 text-white border-emerald-500'
+                              : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                          }`}
+                        >
+                          {d}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setCreateForm(f => ({ ...f, duration_days: '' }))}
+                        className={`px-2 py-0.5 rounded-pill text-[10px] font-semibold border transition-all active:scale-[0.97] ${
+                          createDurationDays === 0
+                            ? 'bg-emerald-500 text-white border-emerald-500'
+                            : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                        }`}
+                        title={t('createModal.unlimited')}
+                      >
+                        ∞
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-gray-500 mb-1">{t('createModal.duration')}</label>
-                  <DurationField
-                    value={createForm.duration_days}
-                    onChange={(v) => setCreateForm({ ...createForm, duration_days: v })}
-                    min={0}
-                    allowInfinite
-                    unit="days"
-                  />
+
+                {/* Concurrent device limit */}
+                <div className="rounded-xl bg-white/[0.03] border border-white/5 p-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-[11px] font-semibold text-gray-400 min-w-0">
+                      <FiSmartphone size={11} className="text-emerald-400 shrink-0" />
+                      <span className="truncate">{t('createModal.deviceLimit')}</span>
+                    </span>
+                    <span className="text-[9px] text-gray-600 shrink-0">
+                      {createLimitIp === 0 ? t('createModal.unlimited') : `${createLimitIp} ${t('createModal.devicesShort')}`}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-6 gap-1">
+                    {deviceLimitOptions.map(option => {
+                      const selected = createLimitIp === option
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => setCreateForm(f => ({ ...f, limit_ip: option === 0 ? '' : String(option) }))}
+                          className={`py-1.5 rounded-lg text-[11px] font-bold border transition-all active:scale-[0.97] ${
+                            selected
+                              ? 'bg-emerald-500 text-white border-emerald-500'
+                              : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                          }`}
+                        >
+                          {option === 0 ? '∞' : option}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[9px] text-gray-600 leading-snug">{t('createModal.deviceLimitHint')}</p>
                 </div>
 
                 <button
                   type="submit"
                   disabled={creating}
-                  className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white font-semibold py-2.5 rounded-btn transition-all active:scale-[0.98] text-[13px]"
+                  className="w-full flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg transition-all active:scale-[0.98] text-[13px]"
                 >
+                  {creating ? <FiLoader className="animate-spin" size={14} /> : <FiCheck size={14} />}
                   {creating ? t('createModal.creating') : t('createModal.create')}
                 </button>
               </form>

@@ -39,7 +39,9 @@
     "traffic": "Traffic",
     "duration": "Duration",
     "failedUpdate": "Failed to update config",
-    "copied": "Copied to clipboard"
+    "copied": "Copied to clipboard",
+    "deviceLimit": "Concurrent device limit",
+    "unlimitedDevices": "Unlimited devices"
   },
   "numberFields": {
     "confirm": "Confirm",
@@ -52,7 +54,17 @@
     "setPassword": "Set ZIP password",
     "send": "Send",
     "sent": "ZIP sent to your Telegram!",
-    "failed": "Failed to send ZIP"
+    "failed": "Failed to send ZIP",
+    "subscription": "Subscription",
+    "proxy": "Proxy {{index}}",
+    "loadingProxies": "Loading proxies…",
+    "previous": "Previous",
+    "next": "Next",
+    "goToSlide": "Go to slide {{index}}",
+    "slideCount": "{{current}} / {{total}}",
+    "sendListToTelegram": "Send config list to Telegram",
+    "listSent": "Config list sent to your Telegram!",
+    "listFailed": "Failed to send config list"
   },
   "confirmDialogs": {
     "deleteConfig": "Delete this config? Unused traffic will be refunded.",

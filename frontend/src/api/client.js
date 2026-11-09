@@ -132,6 +132,12 @@ export const setAdminPasswordForUser = (telegramId, password) =>
 export const sendConfigToBot = (email, password) =>
   api.post(`/api/v1/configs/${encodeURIComponent(email)}/send-to-bot`, { password }).then((r) => r.data)
 
+export const getConfigProxies = (email) =>
+  api.get(`/api/v1/configs/${encodeURIComponent(email)}/proxies`).then((r) => r.data)
+
+export const sendConfigLinksToBot = (email) =>
+  api.post(`/api/v1/configs/${encodeURIComponent(email)}/send-links-to-bot`).then((r) => r.data)
+
 // ── Notifications ───────────────────────────────────────────────────
 export const getMyNotifications = (params) =>
   api.get('/api/v1/notifications/me', { params }).then(r => r.data)
