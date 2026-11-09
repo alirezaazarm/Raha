@@ -138,7 +138,8 @@ async def get_top_users(
     filter: str = Query(
         ...,
         description=(
-            "Metric to rank by: most_used_traffic | most_unused_traffic | "
+            "Metric to rank by: most_used_traffic | most_used_traffic_1d | "
+            "most_used_traffic_7d | most_unused_traffic | "
             "most_purchases | most_unsettled_loans | most_configs"
         ),
     ),
@@ -167,6 +168,73 @@ async def get_top_users(
                 "username": (doc.get("telegram_info") or {}).get("username"),
                 "value": round(doc.get("traffic_balance_gb", 0.0), 2),
                 "metric": "GB unused",
+            })
+        return results
+
+    if filter in ("most_used_traffic_1d", "most_used_traffic_7d"):
+        # Rank users by *actual* traffic consumed inside a rolling window,
+        # aggregated from the hourly usage buckets (per telegram-id prefix).
+        window_hours = 24 if filter == "most_used_traffic_1d" else 24 * 7
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=window_hours)
+        start_day = datetime(
+            cutoff.year, cutoff.month, cutoff.day, tzinfo=timezone.utc
+        )
+
+        usage_by_tid: dict[int, float] = defaultdict(float)
+        cursor = db.config_usages.find(
+            {"date": {"$gte": start_day}},
+            {"email": 1, "date": 1, "hourly_usage": 1, "_id": 0},
+        )
+        async for doc in cursor:
+            prefix = (doc.get("email") or "").split("-")[0].strip()
+            try:
+                tid = int(prefix)
+            except (TypeError, ValueError):
+                continue
+
+            day = doc.get("date")
+            if day is None:
+                continue
+            if day.tzinfo is None:
+                day = day.replace(tzinfo=timezone.utc)
+
+            # Only count hourly buckets that fall inside the rolling window.
+            used = 0.0
+            for hour, bucket in enumerate(doc.get("hourly_usage", [])):
+                if day + timedelta(hours=hour) < cutoff:
+                    continue
+                used += float(bucket.get("u", 0) or 0) + float(bucket.get("d", 0) or 0)
+            if used > 0:
+                usage_by_tid[tid] += used
+
+        top = sorted(usage_by_tid.items(), key=lambda x: x[1], reverse=True)[:limit]
+        if not top:
+            return []
+
+        user_docs: dict[int, Any] = {}
+        async for u in db.users.find(
+            {"telegram_id": {"$in": [tid for tid, _ in top]}},
+            {"telegram_id": 1, "nickname": 1, "telegram_info": 1},
+        ):
+            user_docs[u["telegram_id"]] = u
+
+        metric = (
+            "GB used (24h)" if window_hours == 24 else "GB used (7d)"
+        )
+        results = []
+        for tid, used in top:
+            u = user_docs.get(tid, {})
+            results.append({
+                "telegram_id": tid,
+                "display_name": (
+                    u.get("nickname")
+                    or (u.get("telegram_info") or {}).get("first_name")
+                    or f"ID:{tid}"
+                ),
+                "username": (u.get("telegram_info") or {}).get("username"),
+                "value": round(used, 2),
+                "metric": metric,
             })
         return results
 
@@ -335,8 +403,9 @@ async def get_top_users(
         return results
 
     raise HTTPException(status_code=400, detail=(
-        "Invalid filter. Use one of: most_used_traffic, most_unused_traffic, "
-        "most_purchases, most_unsettled_loans, most_configs, recently_joined"
+        "Invalid filter. Use one of: most_used_traffic, most_used_traffic_1d, "
+        "most_used_traffic_7d, most_unused_traffic, most_purchases, "
+        "most_unsettled_loans, most_configs, recently_joined"
     ))
 
 

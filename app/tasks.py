@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from app.celery_worker import celery_app
 from app.config import get_settings
 from app.integrations.xui_api import build_xui_client
+from app.utils.usage import compute_usage_delta
 from motor.motor_asyncio import AsyncIOMotorClient
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,41 @@ def track_hourly_usage(self) -> dict:
             async for user_doc in db.users.find({}, {"telegram_id": 1, "_id": 0}):
                 telegram_ids.add(str(user_doc["telegram_id"]))
 
+            async def _persist_snapshot(
+                *,
+                email: str,
+                server_name: str,
+                config_uuid: str,
+                snapshot: dict | None,
+                usage_up: float,
+                usage_down: float,
+                client_status: str,
+            ) -> None:
+                """Upsert the usage snapshot on its stable identity.
+
+                Updates the existing document (found by ``(server, email)`` or the
+                legacy UUID lookup) so the same client never ends up with two
+                competing snapshot rows after a key regeneration.
+                """
+                values = {
+                    "usage_up": usage_up,
+                    "usage_down": usage_down,
+                    "client_status": client_status,
+                    "server_name": server_name,
+                    "email": email,
+                    "updated_at": now,
+                }
+                if snapshot is not None and snapshot.get("_id") is not None:
+                    await db.usage_snapshots.update_one(
+                        {"_id": snapshot["_id"]}, {"$set": values}
+                    )
+                else:
+                    await db.usage_snapshots.update_one(
+                        {"uuid": config_uuid},
+                        {"$set": values, "$setOnInsert": {"uuid": config_uuid}},
+                        upsert=True,
+                    )
+
             for server, clients, meta in server_results:
                 if not clients: continue
                 server_name = server.get("name", "")
@@ -124,13 +160,31 @@ def track_hourly_usage(self) -> dict:
 
                     # Retrieve the previous usage snapshot to compute delta and to
                     # know whether this config was already non-active on the last run.
-                    snapshot = await db.usage_snapshots.find_one({"uuid": config_uuid})
-                    prev_up = float(snapshot["usage_up"]) if snapshot else 0.0
-                    prev_down = float(snapshot["usage_down"]) if snapshot else 0.0
-                    prev_status = snapshot.get("client_status", "active") if snapshot else "active"
+                    #
+                    # The panel keeps traffic counters per *email* for the whole
+                    # lifetime of the client; regenerating a key (or re-creating a
+                    # config with a new UUID) keeps those counters but changes the
+                    # UUID.  Keying the snapshot by UUID alone therefore made the
+                    # next run see "no previous snapshot" and book the entire
+                    # lifetime traffic as one hour of usage (the doubled/overshot
+                    # days).  Look the snapshot up by the stable (server, email)
+                    # identity first, fall back to the legacy UUID key, and treat a
+                    # genuinely missing snapshot as a baseline to seed rather than
+                    # as zero.
+                    snapshot = await db.usage_snapshots.find_one(
+                        {"server_name": server_name, "email": email}
+                    )
+                    if snapshot is None:
+                        snapshot = await db.usage_snapshots.find_one(
+                            {"uuid": config_uuid}
+                        )
 
-                    delta_up_bytes = max(0.0, usage_up - prev_up)
-                    delta_down_bytes = max(0.0, usage_down - prev_down)
+                    (
+                        delta_up_bytes,
+                        delta_down_bytes,
+                        prev_status,
+                        _first_seen,
+                    ) = compute_usage_delta(snapshot, usage_up, usage_down)
 
                     # For non-active configs: skip only if this config was already
                     # non-active in the previous run AND produced no new traffic.
@@ -157,17 +211,14 @@ def track_hourly_usage(self) -> dict:
 
                         # Persist snapshot (including status) so the next run can
                         # safely skip this config when it is still non-active.
-                        await db.usage_snapshots.update_one(
-                            {"uuid": config_uuid},
-                            {
-                                "$set": {
-                                    "usage_up": usage_up,
-                                    "usage_down": usage_down,
-                                    "client_status": client_status,
-                                    "updated_at": now,
-                                }
-                            },
-                            upsert=True,
+                        await _persist_snapshot(
+                            email=email,
+                            server_name=server_name,
+                            config_uuid=config_uuid,
+                            snapshot=snapshot,
+                            usage_up=usage_up,
+                            usage_down=usage_down,
+                            client_status=client_status,
                         )
 
                         delta_up_gb = round(delta_up_bytes / _BYTES_TO_GB, 2)
@@ -207,17 +258,14 @@ def track_hourly_usage(self) -> dict:
                     )
 
                     # Persist snapshot update regardless of whether deltas are zero
-                    await db.usage_snapshots.update_one(
-                        {"uuid": config_uuid},
-                        {
-                            "$set": {
-                                "usage_up": usage_up,
-                                "usage_down": usage_down,
-                                "client_status": client_status,
-                                "updated_at": now,
-                            }
-                        },
-                        upsert=True,
+                    await _persist_snapshot(
+                        email=email,
+                        server_name=server_name,
+                        config_uuid=config_uuid,
+                        snapshot=snapshot,
+                        usage_up=usage_up,
+                        usage_down=usage_down,
+                        client_status=client_status,
                     )
 
                     # Convert to GB (2 decimal places) and update hourly bucket

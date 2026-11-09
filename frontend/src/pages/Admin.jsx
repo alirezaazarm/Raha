@@ -1061,6 +1061,8 @@ const data = await postAnnouncement({
                 className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
               >
                 <option value="most_unused_traffic">Most Unused Traffic</option>
+                <option value="most_used_traffic_1d">Most Used Traffic (24h)</option>
+                <option value="most_used_traffic_7d">Most Used Traffic (7d)</option>
                 <option value="most_purchases">Most Purchases</option>
                 <option value="most_unsettled_loans">Most Unsettled Loans</option>
                 <option value="most_configs">Most Configs</option>
